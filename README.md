@@ -156,6 +156,62 @@ make test        # Run unit tests (uses envtest)
 make test-e2e    # Run e2e tests against a Kind cluster
 ```
 
+## Integrations & Automation
+
+The CR status exposes enough information to build lightweight integrations
+without any additional tooling installed in-cluster.
+
+### Example: Discord update notifications via a shell script
+
+The idea: poll the CR status with `kubectl`, compare `status.phase` and
+`status.gameVersion` against a cached value, and POST a Discord webhook
+message whenever something changes.
+
+```bash
+#!/usr/bin/env bash
+# notify-discord.sh — run this from a cron job or a simple loop
+set -euo pipefail
+
+CR_NAME="my-server"
+CR_NS="default"
+DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/<id>/<token>"
+CACHE_FILE="/tmp/enshrouded-status.cache"
+
+# Read current values from the CR.
+STATUS=$(kubectl get enshroudedserver "$CR_NAME" -n "$CR_NS" \
+  -o jsonpath='{.status.phase}|{.status.gameVersion}|{.status.activePlayers}')
+
+if [[ "$STATUS" == "$(cat "$CACHE_FILE" 2>/dev/null)" ]]; then
+  exit 0  # Nothing changed.
+fi
+
+PHASE=$(cut -d'|' -f1 <<< "$STATUS")
+VERSION=$(cut -d'|' -f2 <<< "$STATUS")
+PLAYERS=$(cut -d'|' -f3 <<< "$STATUS")
+
+curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -d "{\"content\": \"**Enshrouded** · phase: \`$PHASE\` · version: \`${VERSION:-unknown}\` · players: \`$PLAYERS\`\"}"
+
+echo "$STATUS" > "$CACHE_FILE"
+```
+
+The same approach works with any language that can call `kubectl` or the
+Kubernetes API directly (e.g. the official Python/Go clients).  A more
+production-grade setup would use a `Deployment` with a controller-runtime
+informer that watches `EnshroudedServer` objects and reacts to
+`.status.conditions` changes — but the script above is sufficient for most
+home-lab scenarios.
+
+**Relevant status fields for this use-case:**
+
+| Field | Example value | When to act |
+|---|---|---|
+| `status.phase` | `Updating` → `Running` | Update completed |
+| `status.gameVersion` | `1.0.7.4` | New version deployed |
+| `status.updateDeferred` | `true` | Update waiting for players to leave |
+| `status.activePlayers` | `3` | Players still connected |
+
 ## Distribution
 
 ### YAML bundle

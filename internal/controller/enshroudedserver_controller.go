@@ -423,13 +423,18 @@ func (r *EnshroudedServerReconciler) reconcileStatefulSet(ctx context.Context, s
 		return r.Create(ctx, desired)
 	}
 
-	// If snapshotBeforeUpdate is enabled and the pod template image has changed,
-	// create a pre-update VolumeSnapshot before applying the update (best-effort).
-	if server.Spec.UpdatePolicy.SnapshotBeforeUpdate && len(existing.Spec.Template.Spec.Containers) > 0 {
+	// Apply the UpgradeStrategy: optionally create a VolumeSnapshot before updating.
+	strategy := server.Spec.UpdatePolicy.UpgradeStrategy
+	if strategy == "" {
+		strategy = enshroudedv1alpha1.UpgradeStrategyNoSnapshot
+	}
+	if strategy != enshroudedv1alpha1.UpgradeStrategyNoSnapshot && len(existing.Spec.Template.Spec.Containers) > 0 {
 		currentImage := existing.Spec.Template.Spec.Containers[0].Image
 		if currentImage != desired.Spec.Template.Spec.Containers[0].Image {
-			if snapErr := r.snapshotBeforeUpdate(ctx, server); snapErr != nil {
-				log.Error(snapErr, "Pre-update snapshot failed — proceeding with update anyway")
+			strict := strategy == enshroudedv1alpha1.UpgradeStrategyStrictSnapshotBeforeUpdate
+			if snapErr := r.snapshotBeforeUpdate(ctx, server, strict); snapErr != nil {
+				// strict=true: error already contains context, block the update.
+				return fmt.Errorf("strict pre-update snapshot failed, blocking update: %w", snapErr)
 			}
 		}
 	}

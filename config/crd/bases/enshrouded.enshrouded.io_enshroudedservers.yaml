@@ -347,13 +347,21 @@ spec:
                     items:
                       type: string
                     type: array
-                  snapshotBeforeUpdate:
+                  upgradeStrategy:
+                    default: NoSnapshot
                     description: |-
-                      snapshotBeforeUpdate triggers a VolumeSnapshot immediately before a
-                      StatefulSet pod-template change is applied. Requires VolumeSnapshot CRDs
-                      to be installed and a VolumeSnapshotClass to be available.
-                      If the snapshot fails the update proceeds anyway (best-effort).
-                    type: boolean
+                      upgradeStrategy controls how VolumeSnapshots are used before a StatefulSet update.
+                      NoSnapshot (default) skips snapshots entirely.
+                      SnapshotBeforeUpdate creates a snapshot before updating, waits for it to complete,
+                      but proceeds with the update regardless of the snapshot outcome (best-effort).
+                      StrictSnapshotBeforeUpdate requires the snapshot to reach ReadyToUse=true before
+                      the update is applied; the update is blocked if the snapshot fails or times out.
+                      Requires VolumeSnapshot CRDs and a VolumeSnapshotClass to be configured.
+                    enum:
+                    - NoSnapshot
+                    - SnapshotBeforeUpdate
+                    - StrictSnapshotBeforeUpdate
+                    type: string
                 type: object
               userGroups:
                 description: |-

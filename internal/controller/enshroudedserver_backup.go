@@ -168,10 +168,15 @@ func (r *EnshroudedServerReconciler) reconcileS3Sidecar(ctx context.Context, ser
 
 // snapshotBeforeUpdate creates a one-off VolumeSnapshot named
 // "<server>-pre-update-<unix-timestamp>" before a StatefulSet update is applied.
-// The function is best-effort: if the snapshot creation fails the error is logged
-// but the update proceeds anyway.  It intentionally does NOT wait for the snapshot
-// to reach ReadyToUse=true so the update is not blocked.
-func (r *EnshroudedServerReconciler) snapshotBeforeUpdate(ctx context.Context, server *enshroudedv1alpha1.EnshroudedServer) error {
+//
+// When strict=false (SnapshotBeforeUpdate strategy) the function waits for the
+// snapshot to complete but returns nil regardless of the outcome — the update
+// always proceeds.
+//
+// When strict=true (StrictSnapshotBeforeUpdate strategy) the function returns a
+// non-nil error if the snapshot fails or does not reach ReadyToUse=true within
+// the timeout, blocking the update.
+func (r *EnshroudedServerReconciler) snapshotBeforeUpdate(ctx context.Context, server *enshroudedv1alpha1.EnshroudedServer, strict bool) error {
 	log := logf.FromContext(ctx)
 
 	pvcName := server.Name + "-savegame"
@@ -208,9 +213,55 @@ func (r *EnshroudedServerReconciler) snapshotBeforeUpdate(ctx context.Context, s
 	}
 
 	if err := r.Create(ctx, snap); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating pre-update VolumeSnapshot %s: %w", snapName, err)
+		err = fmt.Errorf("creating pre-update VolumeSnapshot %s: %w", snapName, err)
+		if strict {
+			return err
+		}
+		log.Error(err, "Pre-update snapshot creation failed — proceeding with update anyway")
+		return nil
 	}
 	log.Info("Created pre-update VolumeSnapshot", "snapshot", snapName)
+
+	// Wait for the snapshot to complete (ReadyToUse=true or an error condition).
+	const pollInterval = 10 * time.Second
+	const snapshotTimeout = 3 * time.Minute
+
+	deadline := time.Now().Add(snapshotTimeout)
+	for time.Now().Before(deadline) {
+		current := &unstructured.Unstructured{}
+		current.SetGroupVersionKind(volumeSnapshotGVK)
+		if err := r.Get(ctx, types.NamespacedName{Name: snapName, Namespace: server.Namespace}, current); err != nil {
+			err = fmt.Errorf("checking pre-update snapshot status: %w", err)
+			if strict {
+				return err
+			}
+			log.Error(err, "Failed to check snapshot status — proceeding anyway")
+			return nil
+		}
+
+		// Snapshot driver signals a hard error via status.error.message.
+		if errMsg, found, _ := unstructured.NestedString(current.Object, "status", "error", "message"); found && errMsg != "" {
+			snapshotErr := fmt.Errorf("pre-update snapshot %s failed: %s", snapName, errMsg)
+			if strict {
+				return snapshotErr
+			}
+			log.Error(snapshotErr, "Pre-update snapshot failed — proceeding with update anyway")
+			return nil
+		}
+
+		if ready, _, _ := unstructured.NestedBool(current.Object, "status", "readyToUse"); ready {
+			log.Info("Pre-update snapshot is ReadyToUse", "snapshot", snapName)
+			return nil
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	timeoutErr := fmt.Errorf("timed out waiting for pre-update snapshot %s to become ReadyToUse", snapName)
+	if strict {
+		return timeoutErr
+	}
+	log.Error(timeoutErr, "Pre-update snapshot timed out — proceeding with update anyway")
 	return nil
 }
 

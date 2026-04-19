@@ -276,8 +276,40 @@ type UpdatePolicySpec struct {
 	// to be installed and a VolumeSnapshotClass to be available.
 	// If the snapshot fails the update proceeds anyway (best-effort).
 	// +optional
-	SnapshotBeforeUpdate bool `json:"snapshotBeforeUpdate,omitempty"`
+	//
+	// Deprecated: use upgradeStrategy instead.
+	// SnapshotBeforeUpdate bool `json:"snapshotBeforeUpdate,omitempty"`
+
+	// upgradeStrategy controls how VolumeSnapshots are used before a StatefulSet update.
+	// NoSnapshot (default) skips snapshots entirely.
+	// SnapshotBeforeUpdate creates a snapshot before updating, waits for it to complete,
+	// but proceeds with the update regardless of the snapshot outcome (best-effort).
+	// StrictSnapshotBeforeUpdate requires the snapshot to reach ReadyToUse=true before
+	// the update is applied; the update is blocked if the snapshot fails or times out.
+	// Requires VolumeSnapshot CRDs and a VolumeSnapshotClass to be configured.
+	// +kubebuilder:default=NoSnapshot
+	// +optional
+	UpgradeStrategy UpgradeStrategyType `json:"upgradeStrategy,omitempty"`
 }
+
+// UpgradeStrategyType controls how VolumeSnapshots are used before a StatefulSet update.
+// +kubebuilder:validation:Enum=NoSnapshot;SnapshotBeforeUpdate;StrictSnapshotBeforeUpdate
+type UpgradeStrategyType string
+
+const (
+	// UpgradeStrategyNoSnapshot applies the update immediately without creating a VolumeSnapshot.
+	UpgradeStrategyNoSnapshot UpgradeStrategyType = "NoSnapshot"
+
+	// UpgradeStrategySnapshotBeforeUpdate creates a VolumeSnapshot before updating.
+	// The operator waits for the snapshot to complete but proceeds with the update
+	// regardless of whether the snapshot succeeded or failed.
+	UpgradeStrategySnapshotBeforeUpdate UpgradeStrategyType = "SnapshotBeforeUpdate"
+
+	// UpgradeStrategyStrictSnapshotBeforeUpdate creates a VolumeSnapshot before updating
+	// and only proceeds if the snapshot reaches ReadyToUse=true within the timeout.
+	// If the snapshot fails or times out the update is blocked and reconciliation returns an error.
+	UpgradeStrategyStrictSnapshotBeforeUpdate UpgradeStrategyType = "StrictSnapshotBeforeUpdate"
+)
 
 // EnshroudedServerPhase represents the lifecycle phase of an EnshroudedServer.
 // +kubebuilder:validation:Enum=Pending;Running;Updating;Error

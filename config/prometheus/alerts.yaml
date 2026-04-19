@@ -26,9 +26,15 @@ spec:
         # The operator is holding back a pending update because players are
         # connected (deferWhilePlaying=true). After 24 h this is worth a look
         # — the session is unusually long or the server might be stuck.
+        #
+        # Uses min_over_time with a subquery instead of a plain `for: 24h`
+        # to avoid resetting the window on brief operator restarts or scrape
+        # gaps. The alert fires once every 5-minute sample in the last 24 h
+        # was 1. A genuine transition back to 0 (players left, update ran)
+        # clears it correctly.
         - alert: EnshroudedUpdateStuck
-          expr: enshrouded_operator_update_deferred == 1
-          for: 24h
+          expr: min_over_time(enshrouded_operator_update_deferred[24h:5m]) == 1
+          for: 0m
           labels:
             severity: warning
           annotations:

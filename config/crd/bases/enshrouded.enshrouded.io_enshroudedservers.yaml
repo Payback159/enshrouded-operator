@@ -137,7 +137,7 @@ spec:
                     description: pullPolicy is the image pull policy.
                     type: string
                   repository:
-                    default: sknnr/enshrouded-dedicated-server
+                    default: ghcr.io/payback159/enshrouded-server
                     description: repository is the container image repository.
                     type: string
                   tag:

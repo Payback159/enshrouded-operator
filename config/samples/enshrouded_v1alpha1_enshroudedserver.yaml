@@ -13,7 +13,7 @@ spec:
   #   name: enshrouded-password
   #   key: password
   image:
-    repository: sknnr/enshrouded-dedicated-server
+    repository: ghcr.io/payback159/enshrouded-server
     tag: latest
     pullPolicy: IfNotPresent
   resources:

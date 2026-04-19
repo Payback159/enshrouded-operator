@@ -25,7 +25,7 @@ import (
 // ImageSpec defines the container image configuration.
 type ImageSpec struct {
 	// repository is the container image repository.
-	// +kubebuilder:default="sknnr/enshrouded-dedicated-server"
+	// +kubebuilder:default="ghcr.io/payback159/enshrouded-server"
 	Repository string `json:"repository"`
 
 	// tag is the container image tag.

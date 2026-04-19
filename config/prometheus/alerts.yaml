@@ -1,0 +1,69 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: enshrouded-operator-alerts
+  namespace: system
+  labels:
+    app.kubernetes.io/name: enshrouded-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  groups:
+    - name: enshrouded.server
+      rules:
+        # The game server is not responding to A2S queries.
+        # Requires the metrics sidecar (metricsSidecar.enabled: true).
+        - alert: EnshroudedServerDown
+          expr: enshrouded_server_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Enshrouded server {{ $labels.name }} is down"
+            description: >
+              The server {{ $labels.namespace }}/{{ $labels.name }} has not
+              responded to A2S queries for more than 5 minutes.
+
+        # The operator is holding back a pending update because players are
+        # connected (deferWhilePlaying=true). After 24 h this is worth a look
+        # — the session is unusually long or the server might be stuck.
+        - alert: EnshroudedUpdateStuck
+          expr: enshrouded_operator_update_deferred == 1
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Enshrouded server {{ $labels.name }} update deferred for >24 h"
+            description: >
+              A pending update for {{ $labels.namespace }}/{{ $labels.name }}
+              has been deferred for more than 24 hours because players are
+              still connected. Check whether the session is intentional or
+              the server is stuck.
+
+        # The operator entered the Error phase, which means a configuration or
+        # reconciliation error that requires manual intervention.
+        - alert: EnshroudedServerError
+          expr: enshrouded_operator_phase_info{phase="Error"} == 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Enshrouded server {{ $labels.name }} is in Error phase"
+            description: >
+              The operator for {{ $labels.namespace }}/{{ $labels.name }}
+              entered the Error phase. Inspect the EnshroudedServer conditions
+              and the operator logs for details.
+
+        # Server has been in Pending/Updating longer than expected — possibly
+        # the image pull is stuck or the pod cannot be scheduled.
+        - alert: EnshroudedServerNotReady
+          expr: |
+            enshrouded_operator_phase_info{phase=~"Pending|Updating"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Enshrouded server {{ $labels.name }} not ready after 30 min"
+            description: >
+              {{ $labels.namespace }}/{{ $labels.name }} has been in phase
+              {{ $labels.phase }} for more than 30 minutes. Check pod events
+              and image pull status.

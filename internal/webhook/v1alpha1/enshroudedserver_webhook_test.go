@@ -40,8 +40,8 @@ var _ = Describe("EnshroudedServer Webhook", func() {
 		validator = EnshroudedServerCustomValidator{}
 		defaulter = EnshroudedServerCustomDefaulter{}
 		// Defaulting normally runs before validation; pre-fill required fields.
-		obj.Spec.Image.Repository = "sknnr/enshrouded-dedicated-server"
-		oldObj.Spec.Image.Repository = "sknnr/enshrouded-dedicated-server"
+		obj.Spec.Image.Repository = "ghcr.io/payback159/enshrouded-server"
+		oldObj.Spec.Image.Repository = "ghcr.io/payback159/enshrouded-server"
 	})
 
 	Context("Defaulting Webhook", func() {
@@ -52,7 +52,7 @@ var _ = Describe("EnshroudedServer Webhook", func() {
 			Expect(obj.Spec.SteamPort).To(Equal(int32(27015)))
 			Expect(obj.Spec.ServerSlots).To(Equal(int32(16)))
 			Expect(obj.Spec.ServerIP).To(Equal("0.0.0.0"))
-			Expect(obj.Spec.Image.Repository).To(Equal("sknnr/enshrouded-dedicated-server"))
+			Expect(obj.Spec.Image.Repository).To(Equal("ghcr.io/payback159/enshrouded-server"))
 			Expect(obj.Spec.Image.Tag).To(Equal("latest"))
 			Expect(obj.Spec.Image.PullPolicy).To(Equal(corev1.PullIfNotPresent))
 			Expect(obj.Spec.Storage.Size.String()).To(Equal("10Gi"))

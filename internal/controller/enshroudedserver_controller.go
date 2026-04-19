@@ -539,7 +539,7 @@ func (r *EnshroudedServerReconciler) buildStatefulSet(server *enshroudedv1alpha1
 	}
 	imageRepo := server.Spec.Image.Repository
 	if imageRepo == "" {
-		imageRepo = "sknnr/enshrouded-dedicated-server"
+		imageRepo = "ghcr.io/payback159/enshrouded-server"
 	}
 	imageTag := server.Spec.Image.Tag
 	if imageTag == "" {

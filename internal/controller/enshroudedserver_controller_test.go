@@ -150,7 +150,7 @@ var _ = Describe("EnshroudedServer Controller", func() {
 
 			sts := getStatefulSet()
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
-			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("sknnr/enshrouded-dedicated-server:latest"))
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/payback159/enshrouded-server:latest"))
 		})
 
 		It("creates a StatefulSet with correct default env vars", func() {

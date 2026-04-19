@@ -37,7 +37,7 @@ var enshroudedserverlog = logf.Log.WithName("enshroudedserver-resource")
 
 const (
 	defaultServerIP        = "0.0.0.0"
-	defaultImageRepository = "sknnr/enshrouded-dedicated-server"
+	defaultImageRepository = "ghcr.io/payback159/enshrouded-server"
 )
 
 // SetupEnshroudedServerWebhookWithManager registers the webhook for EnshroudedServer in the manager.

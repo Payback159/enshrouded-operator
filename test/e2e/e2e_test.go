@@ -387,7 +387,7 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:latest"))
+			Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:latest"))
 
 			By("verifying the StatefulSet has the correct server name env var")
 			cmd = exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
@@ -596,7 +596,7 @@ spec:
   storage:
     size: 1Gi
   image:
-    repository: sknnr/enshrouded-dedicated-server
+    repository: ghcr.io/payback159/enshrouded-server
     tag: %s
   updatePolicy:
 %s`, crName, crNamespace, tag, strategyField)
@@ -624,9 +624,12 @@ spec:
 		f := writeCR(initialTag, "NoSnapshot")
 		defer os.Remove(f)
 
-		cmd := exec.Command("kubectl", "apply", "-f", f)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+		By("applying the CR (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f)
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+		}, 30*time.Second, time.Second).Should(Succeed())
 
 		By("waiting for the StatefulSet with initial image to be created")
 		Eventually(func(g Gomega) {
@@ -634,14 +637,14 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + initialTag))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("updating the CR image tag to " + updatedTag)
 		f2 := writeCR(updatedTag, "NoSnapshot")
 		defer os.Remove(f2)
-		cmd = exec.Command("kubectl", "apply", "-f", f2)
-		_, err = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "apply", "-f", f2)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the StatefulSet is updated to the new image")
@@ -650,7 +653,7 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + updatedTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + updatedTag))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		cleanupCR()
@@ -663,9 +666,12 @@ spec:
 		f := writeCR(initialTag, "SnapshotBeforeUpdate")
 		defer os.Remove(f)
 
-		cmd := exec.Command("kubectl", "apply", "-f", f)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+		By("applying the CR (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f)
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+		}, 30*time.Second, time.Second).Should(Succeed())
 
 		By("waiting for the StatefulSet with initial image to be created")
 		Eventually(func(g Gomega) {
@@ -673,14 +679,14 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + initialTag))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("updating the CR image tag to " + updatedTag)
 		f2 := writeCR(updatedTag, "SnapshotBeforeUpdate")
 		defer os.Remove(f2)
-		cmd = exec.Command("kubectl", "apply", "-f", f2)
-		_, err = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "apply", "-f", f2)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the StatefulSet is updated despite snapshot failure")
@@ -689,7 +695,7 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + updatedTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + updatedTag))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		cleanupCR()
@@ -700,9 +706,12 @@ spec:
 		f := writeCR(initialTag, "StrictSnapshotBeforeUpdate")
 		defer os.Remove(f)
 
-		cmd := exec.Command("kubectl", "apply", "-f", f)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+		By("applying the CR (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f)
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+		}, 30*time.Second, time.Second).Should(Succeed())
 
 		By("waiting for the StatefulSet with initial image to be created")
 		Eventually(func(g Gomega) {
@@ -710,14 +719,14 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + initialTag))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("updating the CR image tag to " + updatedTag)
 		f2 := writeCR(updatedTag, "StrictSnapshotBeforeUpdate")
 		defer os.Remove(f2)
-		cmd = exec.Command("kubectl", "apply", "-f", f2)
-		_, err = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "apply", "-f", f2)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying the StatefulSet image remains at the original tag (update blocked)")
@@ -728,7 +737,7 @@ spec:
 				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
 			out, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+			g.Expect(out).To(Equal("ghcr.io/payback159/enshrouded-server:" + initialTag))
 		}, 30*time.Second, 5*time.Second).Should(Succeed())
 
 		cleanupCR()
@@ -788,7 +797,7 @@ spec:
   storage:
     size: 1Gi
   image:
-    repository: sknnr/enshrouded-dedicated-server
+    repository: ghcr.io/payback159/enshrouded-server
     tag: latest
 %s`, crName, crNamespace, vsBlock)
 

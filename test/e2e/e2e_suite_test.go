@@ -72,6 +72,22 @@ var _ = BeforeSuite(func() {
 	err = utils.LoadImageToKindClusterWithName(sidecarImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the metrics sidecar image into Kind")
 
+	By("pulling the curl image for metrics test")
+	cmd = exec.Command("docker", "pull", "--platform", "linux/amd64", "curlimages/curl:latest")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull curlimages/curl:latest")
+
+	By("loading the curl image on Kind")
+	kindClusterName := "enshrouded-operator-test-e2e"
+	if v := os.Getenv("KIND_CLUSTER"); v != "" {
+		kindClusterName = v
+	}
+	kindNode := kindClusterName + "-control-plane"
+	cmd = exec.Command("bash", "-c",
+		"docker save curlimages/curl:latest | docker exec -i "+kindNode+" ctr --namespace=k8s.io images import -")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load curlimages/curl:latest into Kind")
+
 	// Install CRDs globally so that all Describe blocks (UpgradeStrategy,
 	// VerticalScaling, Manager…) can apply EnshroudedServer CRs regardless
 	// of the randomised execution order chosen by Ginkgo.
@@ -92,6 +108,10 @@ var _ = BeforeSuite(func() {
 		"pod-security.kubernetes.io/enforce=restricted")
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+	// Install CertManager before deploying the controller-manager, because the
+	// kustomize manifest includes cert-manager Certificate/Issuer resources.
+	setupCertManager()
 
 	// Deploy the controller-manager once so UpgradeStrategy, VerticalScaling
 	// and Manager tests all run against a live controller.
@@ -132,8 +152,6 @@ var _ = BeforeSuite(func() {
 		g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
 		g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
 	}, 3*time.Minute, time.Second).Should(Succeed())
-
-	setupCertManager()
 })
 
 var _ = AfterSuite(func() {

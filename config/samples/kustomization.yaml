@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- enshrouded_v1alpha1_enshroudedserver.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

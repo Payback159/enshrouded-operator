@@ -1,0 +1,52 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-enshrouded-enshrouded-io-v1alpha1-enshroudedserver
+  failurePolicy: Fail
+  name: menshroudedserver-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - enshrouded.enshrouded.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - enshroudedservers
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-enshrouded-enshrouded-io-v1alpha1-enshroudedserver
+  failurePolicy: Fail
+  name: venshroudedserver-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - enshrouded.enshrouded.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - enshroudedservers
+  sideEffects: None

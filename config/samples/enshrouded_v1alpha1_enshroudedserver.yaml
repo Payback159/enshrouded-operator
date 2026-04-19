@@ -1,0 +1,28 @@
+apiVersion: enshrouded.enshrouded.io/v1alpha1
+kind: EnshroudedServer
+metadata:
+  name: my-enshrouded-server
+  namespace: default
+spec:
+  serverName: "My Enshrouded Server"
+  port: 15637
+  steamPort: 27015
+  serverSlots: 16
+  serverIP: "0.0.0.0"
+  # serverPasswordSecretRef:
+  #   name: enshrouded-password
+  #   key: password
+  image:
+    repository: sknnr/enshrouded-dedicated-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 6Gi
+  storage:
+    size: 10Gi
+    # storageClassName: standard

@@ -170,6 +170,66 @@ type EnshroudedServerSpec struct {
 	// DeferWhilePlaying feature has accurate data.
 	// +optional
 	MetricsSidecar MetricsSidecarSpec `json:"metricsSidecar,omitempty"`
+
+	// verticalScaling enables optional integration with the Vertical Pod Autoscaler (VPA).
+	// When enabled the operator creates a VerticalPodAutoscaler object for the game
+	// server StatefulSet. Requires VPA CRDs to be installed in the cluster; if they
+	// are absent the operator logs a warning and continues without error.
+	// +optional
+	VerticalScaling VerticalScalingSpec `json:"verticalScaling,omitempty"`
+}
+
+// VPAUpdateMode controls how the VerticalPodAutoscaler applies resource recommendations.
+//
+//   - Off:      VPA calculates recommendations but neither VPA nor the operator
+//     applies them. Use this to observe recommendations first via
+//     kubectl describe verticalpodautoscaler before enabling automation.
+//   - WhenIdle: The operator reads VPA recommendations every reconcile cycle and
+//     applies them directly to the StatefulSet. CPU changes are applied
+//     immediately; memory decreases are deferred until no players are
+//     connected to avoid OOM-kills during active game sessions.
+//   - InPlace:  VPA applies recommendations autonomously using Kubernetes In-Place
+//     Pod Vertical Scaling (requires K8s ≥ 1.33). No memory guard —
+//     suitable only when the game server is managed by an automation
+//     layer that can tolerate brief resource adjustments.
+//
+// +kubebuilder:validation:Enum=Off;WhenIdle;InPlace
+type VPAUpdateMode string
+
+const (
+	// VPAUpdateModeOff leaves recommendations visible but unapplied.
+	VPAUpdateModeOff VPAUpdateMode = "Off"
+	// VPAUpdateModeWhenIdle lets the operator apply recommendations with a memory guard.
+	VPAUpdateModeWhenIdle VPAUpdateMode = "WhenIdle"
+	// VPAUpdateModeInPlace delegates recommendation application to VPA directly.
+	VPAUpdateModeInPlace VPAUpdateMode = "InPlace"
+)
+
+// VerticalScalingSpec configures optional VPA integration for the game server pod.
+type VerticalScalingSpec struct {
+	// enabled activates VPA integration. When true the operator creates a
+	// VerticalPodAutoscaler object targeting the game server StatefulSet.
+	// Requires VPA CRDs to be installed; if absent the operator logs a warning
+	// and continues without error.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// updateMode controls how VPA recommendations are applied.
+	// Off: observe only. WhenIdle: operator-controlled with memory guard.
+	// InPlace: VPA applies directly (K8s ≥ 1.33 required).
+	// +kubebuilder:default=WhenIdle
+	// +optional
+	UpdateMode VPAUpdateMode `json:"updateMode,omitempty"`
+
+	// minAllowed sets a lower bound on VPA recommendations per resource.
+	// For Proton-based servers set memory to at least 6Gi to cover Wine overhead
+	// and world-load spikes (e.g. "6Gi" for Enshrouded).
+	// +optional
+	MinAllowed corev1.ResourceList `json:"minAllowed,omitempty"`
+
+	// maxAllowed sets an upper bound on VPA recommendations per resource.
+	// +optional
+	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty"`
 }
 
 // MetricsSidecarSpec configures the metrics sidecar injected into the game server pod.

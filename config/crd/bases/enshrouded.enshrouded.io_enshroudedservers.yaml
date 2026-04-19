@@ -434,6 +434,54 @@ spec:
                   - name
                   type: object
                 type: array
+              verticalScaling:
+                description: |-
+                  verticalScaling enables optional integration with the Vertical Pod Autoscaler (VPA).
+                  When enabled the operator creates a VerticalPodAutoscaler object for the game
+                  server StatefulSet. Requires VPA CRDs to be installed in the cluster; if they
+                  are absent the operator logs a warning and continues without error.
+                properties:
+                  enabled:
+                    description: |-
+                      enabled activates VPA integration. When true the operator creates a
+                      VerticalPodAutoscaler object targeting the game server StatefulSet.
+                      Requires VPA CRDs to be installed; if absent the operator logs a warning
+                      and continues without error.
+                    type: boolean
+                  maxAllowed:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: maxAllowed sets an upper bound on VPA recommendations
+                      per resource.
+                    type: object
+                  minAllowed:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      minAllowed sets a lower bound on VPA recommendations per resource.
+                      For Proton-based servers set memory to at least 6Gi to cover Wine overhead
+                      and world-load spikes (e.g. "6Gi" for Enshrouded).
+                    type: object
+                  updateMode:
+                    default: WhenIdle
+                    description: |-
+                      updateMode controls how VPA recommendations are applied.
+                      Off: observe only. WhenIdle: operator-controlled with memory guard.
+                      InPlace: VPA applies directly (K8s ≥ 1.33 required).
+                    enum:
+                    - "Off"
+                    - WhenIdle
+                    - InPlace
+                    type: string
+                type: object
             type: object
           status:
             description: status defines the observed state of EnshroudedServer

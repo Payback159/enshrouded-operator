@@ -94,6 +94,7 @@ type userGroupJSON struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the current cluster state closer to the desired state defined
 // by the EnshroudedServer resource.
@@ -168,6 +169,14 @@ func (r *EnshroudedServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if err := r.reconcilePDB(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileVPA(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.applyVPARecommendation(ctx, server); err != nil {
 		return ctrl.Result{}, err
 	}
 

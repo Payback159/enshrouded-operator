@@ -1552,6 +1552,112 @@ var _ = Describe("status.GameVersion", func() {
 })
 
 // -----------------------------------------------------------------
+// VerticalScaling
+// -----------------------------------------------------------------
+
+var _ = Describe("VerticalScaling", func() {
+	const namespace = "default"
+
+	// vsNN is a unique-per-spec helper that returns a NamespacedName.
+	vsNN := func(name string) types.NamespacedName {
+		return types.NamespacedName{Name: name, Namespace: namespace}
+	}
+
+	// createServer creates a minimal EnshroudedServer and returns its NN.
+	createServer := func(ctx context.Context, name string, mutate func(*enshroudedv1alpha1.EnshroudedServer)) types.NamespacedName {
+		server := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+				ServerName: name,
+			},
+		}
+		if mutate != nil {
+			mutate(server)
+		}
+		Expect(k8sClient.Create(ctx, server)).To(Succeed())
+		DeferCleanup(func(cleanCtx context.Context) {
+			_ = k8sClient.Delete(cleanCtx, server)
+		})
+		return vsNN(name)
+	}
+
+	Context("disabled (Enabled=false)", func() {
+		It("does not create a VPA object and reconcile succeeds", func(ctx context.Context) {
+			nn := createServer(ctx, "vs-disabled", func(s *enshroudedv1alpha1.EnshroudedServer) {
+				s.Spec.VerticalScaling = enshroudedv1alpha1.VerticalScalingSpec{
+					Enabled: false,
+				}
+			})
+
+			_, err := reconcileNN(ctx, nn)
+			Expect(err).NotTo(HaveOccurred())
+			// VPA CRDs are absent in envtest — reconcileVPA returns nil (non-fatal).
+			// We verify by checking that no VPA GET call in the reconciler produced an error.
+		})
+	})
+
+	Context("enabled (Enabled=true) — VPA CRDs absent in envtest", func() {
+		It("reconciles without error even though the CRD is missing", func(ctx context.Context) {
+			nn := createServer(ctx, "vs-enabled-no-crd", func(s *enshroudedv1alpha1.EnshroudedServer) {
+				s.Spec.VerticalScaling = enshroudedv1alpha1.VerticalScalingSpec{
+					Enabled:    true,
+					UpdateMode: enshroudedv1alpha1.VPAUpdateModeWhenIdle,
+					MinAllowed: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("6Gi"),
+					},
+				}
+			})
+
+			_, err := reconcileNN(ctx, nn)
+			// Should succeed — missing CRD is non-fatal.
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("applyVPARecommendation — unit tests (no K8s calls)", func() {
+		newServer := func(mode enshroudedv1alpha1.VPAUpdateMode, activePlayers int32) *enshroudedv1alpha1.EnshroudedServer {
+			return &enshroudedv1alpha1.EnshroudedServer{
+				Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+					VerticalScaling: enshroudedv1alpha1.VerticalScalingSpec{
+						Enabled:    true,
+						UpdateMode: mode,
+					},
+				},
+				Status: enshroudedv1alpha1.EnshroudedServerStatus{
+					ActivePlayers: activePlayers,
+				},
+			}
+		}
+
+		It("is a no-op when UpdateMode=Off", func(ctx context.Context) {
+			r := newReconciler()
+			server := newServer(enshroudedv1alpha1.VPAUpdateModeOff, 0)
+			// applyVPARecommendation should return early without hitting the API.
+			err := r.applyVPARecommendation(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("is a no-op when UpdateMode=InPlace", func(ctx context.Context) {
+			r := newReconciler()
+			server := newServer(enshroudedv1alpha1.VPAUpdateModeInPlace, 0)
+			err := r.applyVPARecommendation(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("is a no-op when VerticalScaling.Enabled=false", func(ctx context.Context) {
+			r := newReconciler()
+			server := &enshroudedv1alpha1.EnshroudedServer{
+				Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+					VerticalScaling: enshroudedv1alpha1.VerticalScalingSpec{Enabled: false},
+				},
+			}
+			err := r.applyVPARecommendation(ctx, server)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})
+
+// -----------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------
 

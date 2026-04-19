@@ -26,3 +26,20 @@ spec:
   storage:
     size: 10Gi
     # storageClassName: standard
+
+  # verticalScaling enables optional Vertical Pod Autoscaler (VPA) integration.
+  # Requires the VPA CRDs to be installed; the operator continues normally when absent.
+  # verticalScaling:
+  #   enabled: true
+  #   # updateMode controls how recommendations are applied:
+  #   #   Off      — VPA observes only, operator applies nothing
+  #   #   WhenIdle — operator applies CPU always; defers memory scale-down while players are connected (default)
+  #   #   InPlace  — VPA applies recommendations directly (requires Kubernetes ≥ 1.33 InPlacePodVerticalScaling gate)
+  #   updateMode: WhenIdle
+  #   minAllowed:
+  #     # Proton/Wine overhead: keep memory at or above 6Gi to avoid OOM-kills during world load
+  #     memory: "6Gi"
+  #     cpu: "500m"
+  #   maxAllowed:
+  #     memory: "16Gi"
+  #     cpu: "8"

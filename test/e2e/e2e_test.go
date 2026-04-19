@@ -52,26 +52,9 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		By("ensuring manager namespace exists and is labeled")
+		// Namespace and controller are deployed globally in BeforeSuite;
+		// nothing to do here.
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -83,18 +66,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("cleaning up the metrics ClusterRoleBinding")
 		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
 	})
 
@@ -787,6 +758,145 @@ spec:
 		out, err := utils.Run(cmd)
 		Expect(err).To(HaveOccurred(), "expected apply to fail for invalid upgradeStrategy")
 		Expect(out).To(ContainSubstring("upgradeStrategy"))
+	})
+})
+
+// -----------------------------------------------------------------
+var _ = Describe("VerticalScaling", Ordered, func() {
+	const (
+		crNamespace = "default"
+		crName      = "e2e-vpa-server"
+	)
+
+	// writeCR writes an EnshroudedServer CR yaml with the given verticalScaling block
+	// (pass "" to omit it entirely).
+	writeCR := func(verticalScalingYAML string) string {
+		vsBlock := ""
+		if verticalScalingYAML != "" {
+			vsBlock = "  verticalScaling:\n" + verticalScalingYAML
+		}
+		yaml := fmt.Sprintf(`apiVersion: enshrouded.enshrouded.io/v1alpha1
+kind: EnshroudedServer
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  serverName: "E2E VPA Test"
+  port: 15638
+  steamPort: 27016
+  serverSlots: 4
+  storage:
+    size: 1Gi
+  image:
+    repository: sknnr/enshrouded-dedicated-server
+    tag: latest
+%s`, crName, crNamespace, vsBlock)
+
+		f, err := os.CreateTemp("", "enshrouded-vpa-cr-*.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = f.WriteString(yaml)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.Close()).To(Succeed())
+		return f.Name()
+	}
+
+	cleanupCR := func() {
+		cmd := exec.Command("kubectl", "delete", "enshroudedserver", crName, "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "statefulset", crName, "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "pvc", crName+"-savegame", "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	}
+
+	AfterAll(cleanupCR)
+
+	It("verticalScaling disabled: reconcile succeeds and StatefulSet is created", func() {
+		f := writeCR("    enabled: false\n")
+		defer os.Remove(f)
+
+		By("applying the CR (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f)
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+		}, 30*time.Second, time.Second).Should(Succeed())
+
+		By("waiting for the StatefulSet to be created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.metadata.name}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal(crName))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		cleanupCR()
+	})
+
+	It("verticalScaling enabled — VPA CRDs absent in Kind: reconcile is non-fatal", func() {
+		// Kind clusters ship without VPA CRDs. The operator must continue
+		// reconciling normally and NOT return an error.
+		f := writeCR("    enabled: true\n    updateMode: WhenIdle\n    minAllowed:\n      memory: \"6Gi\"\n")
+		defer os.Remove(f)
+
+		By("applying the CR (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f)
+			_, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+		}, 30*time.Second, time.Second).Should(Succeed())
+
+		By("waiting for the StatefulSet to be created (reconcile must succeed despite absent VPA CRDs)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.metadata.name}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal(crName))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying no error events are raised for the EnshroudedServer")
+		// Give the controller a moment to emit events if it were to error.
+		time.Sleep(10 * time.Second)
+		eventsCmd := exec.Command("kubectl", "get", "events", "-n", crNamespace,
+			"--field-selector", fmt.Sprintf("involvedObject.name=%s,reason=ReconcileError", crName),
+			"-o", "jsonpath={.items}")
+		out, err := utils.Run(eventsCmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(Equal("[]"), "expected no ReconcileError events for EnshroudedServer with VPA enabled but CRDs absent")
+
+		cleanupCR()
+	})
+
+	It("webhook: rejects an invalid updateMode value", func() {
+		yaml := fmt.Sprintf(`apiVersion: enshrouded.enshrouded.io/v1alpha1
+kind: EnshroudedServer
+metadata:
+  name: %s-invalid-vpa
+  namespace: %s
+spec:
+  storage:
+    size: 1Gi
+  verticalScaling:
+    enabled: true
+    updateMode: InvalidMode
+`, crName, crNamespace)
+
+		f, err := os.CreateTemp("", "enshrouded-invalid-vpa-*.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.Remove(f.Name())
+		_, err = f.WriteString(yaml)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.Close()).To(Succeed())
+
+		By("applying invalid CR (retry until webhook responds with validation error)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "apply", "-f", f.Name())
+			out, err := utils.Run(cmd)
+			g.Expect(err).To(HaveOccurred(), "expected apply to fail for invalid updateMode")
+			g.Expect(out).To(ContainSubstring("updateMode"))
+		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 })
 

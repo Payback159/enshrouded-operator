@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -63,7 +64,7 @@ var _ = BeforeSuite(func() {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
 	By("building the metrics sidecar image")
-	cmd = exec.Command("docker", "build", "-t", sidecarImage, "-f", "cmd/metrics-sidecar/Dockerfile", ".")
+	cmd = exec.Command("docker", "build", "-t", sidecarImage, "-f", "Dockerfile.sidecar", ".")
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the metrics sidecar image")
 
@@ -71,11 +72,84 @@ var _ = BeforeSuite(func() {
 	err = utils.LoadImageToKindClusterWithName(sidecarImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the metrics sidecar image into Kind")
 
+	// Install CRDs globally so that all Describe blocks (UpgradeStrategy,
+	// VerticalScaling, Manager…) can apply EnshroudedServer CRs regardless
+	// of the randomised execution order chosen by Ginkgo.
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+	// Create the operator namespace and apply the restricted security label
+	// so that all Describe blocks that reference the namespace succeed
+	// regardless of order.
+	By("creating manager namespace")
+	cmd = exec.Command("kubectl", "create", "ns", "enshrouded-operator-system")
+	_, _ = utils.Run(cmd) // ignore AlreadyExists from previous runs
+
+	By("labeling the namespace to enforce the restricted security policy")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", "enshrouded-operator-system",
+		"pod-security.kubernetes.io/enforce=restricted")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+	// Deploy the controller-manager once so UpgradeStrategy, VerticalScaling
+	// and Manager tests all run against a live controller.
+	By("deploying the controller-manager")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+	// Wait for the controller pod to be Running so that the webhook is up
+	// before any Describe block applies an EnshroudedServer CR.
+	By("waiting for the controller-manager pod to be Running")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get",
+			"pods", "-l", "control-plane=controller-manager",
+			"-o", "go-template={{ range .items }}"+
+				"{{ if not .metadata.deletionTimestamp }}"+
+				"{{ .metadata.name }}"+
+				"{{ \"\\n\" }}{{ end }}{{ end }}",
+			"-n", namespace,
+		)
+		podOutput, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		podNames := utils.GetNonEmptyLines(podOutput)
+		g.Expect(podNames).To(HaveLen(1))
+		cmd = exec.Command("kubectl", "get", "pods", podNames[0],
+			"-o", "jsonpath={.status.phase}", "-n", namespace)
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(output).To(Equal("Running"))
+	}, 3*time.Minute, time.Second).Should(Succeed())
+
+	By("waiting for the webhook service endpoints to be ready")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
+			"-l", "kubernetes.io/service-name=enshrouded-operator-webhook-service",
+			"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
+		g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
+	}, 3*time.Minute, time.Second).Should(Succeed())
+
 	setupCertManager()
 })
 
 var _ = AfterSuite(func() {
 	teardownCertManager()
+
+	By("undeploying the controller-manager")
+	cmd := exec.Command("make", "undeploy")
+	_, _ = utils.Run(cmd)
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	_, _ = utils.Run(cmd)
+
+	By("removing manager namespace")
+	cmd = exec.Command("kubectl", "delete", "ns", "enshrouded-operator-system", "--ignore-not-found")
+	_, _ = utils.Run(cmd)
 })
 
 // setupCertManager installs CertManager if it is not already present.

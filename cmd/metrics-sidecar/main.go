@@ -449,6 +449,18 @@ func scrape(
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Main
+// makeReadyzHandler returns an HTTP handler that replies 200 when the game
+// server is responding to A2S queries and 503 otherwise.
+func makeReadyzHandler(isUp *atomic.Bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if isUp.Load() {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -492,13 +504,7 @@ func main() {
 	})
 	// /readyz returns 200 when the game server responds to A2S queries.
 	// Used as the readiness probe for the game server container.
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if isUp.Load() {
-			w.WriteHeader(http.StatusOK)
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-	})
+	mux.HandleFunc("/readyz", makeReadyzHandler(&isUp))
 	srv := &http.Server{
 		Addr:         cfg.metricsAddr,
 		Handler:      mux,

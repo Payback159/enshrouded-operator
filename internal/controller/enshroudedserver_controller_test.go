@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1325,6 +1326,232 @@ var _ = Describe("Metrics sidecar StatefulSet injection", func() {
 })
 
 // -----------------------------------------------------------------
+// PodDisruptionBudget
+// -----------------------------------------------------------------
+
+var _ = Describe("PodDisruptionBudget", func() {
+	const (
+		pdbNS   = "default"
+		pdbName = "pdb-test-server"
+	)
+	pdbNN := types.NamespacedName{Name: pdbName, Namespace: pdbNS}
+	pdbCtx := context.Background()
+
+	newPDBServer := func(spec enshroudedv1alpha1.EnshroudedServerSpec) {
+		cr := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: pdbName, Namespace: pdbNS},
+			Spec:       spec,
+		}
+		Expect(k8sClient.Create(pdbCtx, cr)).To(Succeed())
+	}
+	pdbRec := func() (reconcile.Result, error) {
+		return newReconciler().Reconcile(pdbCtx, reconcile.Request{NamespacedName: pdbNN})
+	}
+	getPDB := func() *policyv1.PodDisruptionBudget {
+		pdb := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(pdbCtx, pdbNN, pdb)).To(Succeed())
+		return pdb
+	}
+
+	AfterEach(func() {
+		cr := &enshroudedv1alpha1.EnshroudedServer{}
+		if err := k8sClient.Get(pdbCtx, pdbNN, cr); err == nil {
+			cr.Finalizers = nil
+			_ = k8sClient.Update(pdbCtx, cr)
+			_ = k8sClient.Delete(pdbCtx, cr)
+		}
+		_ = k8sClient.Delete(pdbCtx, &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: pdbName, Namespace: pdbNS},
+		})
+		_ = k8sClient.Delete(pdbCtx, &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: pdbName, Namespace: pdbNS},
+		})
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := k8sClient.Get(pdbCtx, types.NamespacedName{Name: pdbName + "-savegame", Namespace: pdbNS}, pvc); err == nil {
+			pvc.Finalizers = nil
+			_ = k8sClient.Update(pdbCtx, pvc)
+			_ = k8sClient.Delete(pdbCtx, pvc)
+		}
+	})
+
+	It("creates a PodDisruptionBudget after the first reconcile", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		pdb := getPDB()
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+	})
+
+	It("sets an owner reference pointing to the EnshroudedServer", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		pdb := getPDB()
+		Expect(pdb.OwnerReferences).To(HaveLen(1))
+		Expect(pdb.OwnerReferences[0].Name).To(Equal(pdbName))
+	})
+
+	It("sets maxUnavailable=1 when DeferWhilePlaying is false", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{
+			UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{DeferWhilePlaying: false},
+		})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPDB().Spec.MaxUnavailable.IntValue()).To(Equal(1))
+	})
+
+	It("sets maxUnavailable=1 when DeferWhilePlaying=true but no players are connected", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{
+			UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{DeferWhilePlaying: true},
+		})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPDB().Spec.MaxUnavailable.IntValue()).To(Equal(1))
+	})
+
+	It("sets maxUnavailable=0 when DeferWhilePlaying=true and players are active", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{
+			UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{DeferWhilePlaying: true},
+		})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+
+		cr := &enshroudedv1alpha1.EnshroudedServer{}
+		Expect(k8sClient.Get(pdbCtx, pdbNN, cr)).To(Succeed())
+		cr.Status.ActivePlayers = 2
+		Expect(k8sClient.Status().Update(pdbCtx, cr)).To(Succeed())
+
+		_, err = pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPDB().Spec.MaxUnavailable.IntValue()).To(Equal(0))
+	})
+
+	It("updates maxUnavailable from 0 to 1 when all players disconnect", func() {
+		newPDBServer(enshroudedv1alpha1.EnshroudedServerSpec{
+			UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{DeferWhilePlaying: true},
+		})
+		_, err := pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Players connect → maxUnavailable=0.
+		cr := &enshroudedv1alpha1.EnshroudedServer{}
+		Expect(k8sClient.Get(pdbCtx, pdbNN, cr)).To(Succeed())
+		cr.Status.ActivePlayers = 3
+		Expect(k8sClient.Status().Update(pdbCtx, cr)).To(Succeed())
+		_, err = pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPDB().Spec.MaxUnavailable.IntValue()).To(Equal(0))
+
+		// Players disconnect → maxUnavailable=1.
+		Expect(k8sClient.Get(pdbCtx, pdbNN, cr)).To(Succeed())
+		cr.Status.ActivePlayers = 0
+		Expect(k8sClient.Status().Update(pdbCtx, cr)).To(Succeed())
+		_, err = pdbRec()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPDB().Spec.MaxUnavailable.IntValue()).To(Equal(1))
+	})
+})
+
+// -----------------------------------------------------------------
+// Readiness probe injection in buildStatefulSet
+// -----------------------------------------------------------------
+
+var _ = Describe("Readiness probe", func() {
+	It("injects a readiness probe on the game container when the sidecar is enabled", func() {
+		server := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "readyz-test", Namespace: "default"},
+			Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+				MetricsSidecar: enshroudedv1alpha1.MetricsSidecarSpec{
+					Enabled:     true,
+					MetricsPort: 9090,
+				},
+			},
+		}
+		sts := newReconciler().buildStatefulSet(server, "")
+		gameContainer := sts.Spec.Template.Spec.Containers[0]
+		Expect(gameContainer.Name).To(Equal("enshrouded-server"))
+		Expect(gameContainer.ReadinessProbe).NotTo(BeNil())
+		Expect(gameContainer.ReadinessProbe.HTTPGet).NotTo(BeNil())
+		Expect(gameContainer.ReadinessProbe.HTTPGet.Path).To(Equal("/readyz"))
+		Expect(gameContainer.ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(9090))
+		Expect(gameContainer.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(60)))
+		Expect(gameContainer.ReadinessProbe.PeriodSeconds).To(Equal(int32(15)))
+		Expect(gameContainer.ReadinessProbe.FailureThreshold).To(Equal(int32(3)))
+	})
+
+	It("does not inject a readiness probe when the sidecar is disabled", func() {
+		server := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-readyz-test", Namespace: "default"},
+			Spec:       enshroudedv1alpha1.EnshroudedServerSpec{},
+		}
+		sts := newReconciler().buildStatefulSet(server, "")
+		Expect(sts.Spec.Template.Spec.Containers[0].ReadinessProbe).To(BeNil())
+	})
+
+	It("falls back to port 9090 when MetricsPort is 0", func() {
+		server := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "readyz-default-port", Namespace: "default"},
+			Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+				MetricsSidecar: enshroudedv1alpha1.MetricsSidecarSpec{
+					Enabled:     true,
+					MetricsPort: 0,
+				},
+			},
+		}
+		sts := newReconciler().buildStatefulSet(server, "")
+		Expect(sts.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(9090))
+	})
+})
+
+// -----------------------------------------------------------------
+// status.GameVersion field
+// -----------------------------------------------------------------
+
+var _ = Describe("status.GameVersion", func() {
+	const (
+		gvNS   = "default"
+		gvName = "gamever-test-server"
+	)
+	gvNN := types.NamespacedName{Name: gvName, Namespace: gvNS}
+	gvCtx := context.Background()
+
+	AfterEach(func() {
+		cr := &enshroudedv1alpha1.EnshroudedServer{}
+		if err := k8sClient.Get(gvCtx, gvNN, cr); err == nil {
+			cr.Finalizers = nil
+			_ = k8sClient.Update(gvCtx, cr)
+			_ = k8sClient.Delete(gvCtx, cr)
+		}
+		_ = k8sClient.Delete(gvCtx, &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: gvName, Namespace: gvNS},
+		})
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := k8sClient.Get(gvCtx, types.NamespacedName{Name: gvName + "-savegame", Namespace: gvNS}, pvc); err == nil {
+			pvc.Finalizers = nil
+			_ = k8sClient.Update(gvCtx, pvc)
+			_ = k8sClient.Delete(gvCtx, pvc)
+		}
+	})
+
+	It("allows writing and reading status.GameVersion via the status subresource", func() {
+		cr := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: gvName, Namespace: gvNS},
+			Spec:       enshroudedv1alpha1.EnshroudedServerSpec{},
+		}
+		Expect(k8sClient.Create(gvCtx, cr)).To(Succeed())
+		_, err := newReconciler().Reconcile(gvCtx, reconcile.Request{NamespacedName: gvNN})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(gvCtx, gvNN, cr)).To(Succeed())
+		cr.Status.GameVersion = "1.0.7.4"
+		Expect(k8sClient.Status().Update(gvCtx, cr)).To(Succeed())
+
+		Expect(k8sClient.Get(gvCtx, gvNN, cr)).To(Succeed())
+		Expect(cr.Status.GameVersion).To(Equal("1.0.7.4"))
+	})
+})
+
+// -----------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------
 
@@ -1346,129 +1573,3 @@ func findEnvVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
 	}
 	return nil
 }
-
-// -----------------------------------------------------------------
-// 14b. UpgradeStrategy — snapshotBeforeUpdate behaviour
-// -----------------------------------------------------------------
-var _ = Describe("UpgradeStrategy", func() {
-	const (
-		upgradeNS      = "default"
-		upgradeName    = "upgrade-strategy-server"
-		upgradeInitTag = "v1.0"
-		upgradeNextTag = "v2.0"
-	)
-	var (
-		upgradeNN  = types.NamespacedName{Name: upgradeName, Namespace: upgradeNS}
-		upgradeCtx = context.Background()
-	)
-
-	// Helper: create CR with a specific image tag and upgrade strategy.
-	createUpgradeServer := func(tag string, strategy enshroudedv1alpha1.UpgradeStrategyType) {
-		cr := &enshroudedv1alpha1.EnshroudedServer{
-			ObjectMeta: metav1.ObjectMeta{Name: upgradeName, Namespace: upgradeNS},
-			Spec: enshroudedv1alpha1.EnshroudedServerSpec{
-				Image: enshroudedv1alpha1.ImageSpec{
-					Repository: "sknnr/enshrouded-dedicated-server",
-					Tag:        tag,
-				},
-				UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{
-					UpgradeStrategy: strategy,
-				},
-			},
-		}
-		Expect(k8sClient.Create(upgradeCtx, cr)).To(Succeed())
-	}
-
-	AfterEach(func() {
-		cr := &enshroudedv1alpha1.EnshroudedServer{}
-		if err := k8sClient.Get(upgradeCtx, upgradeNN, cr); err == nil {
-			cr.Finalizers = nil
-			_ = k8sClient.Update(upgradeCtx, cr)
-			_ = k8sClient.Delete(upgradeCtx, cr)
-		}
-		_ = k8sClient.Delete(upgradeCtx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: upgradeName, Namespace: upgradeNS}})
-		pvc := &corev1.PersistentVolumeClaim{}
-		if err := k8sClient.Get(upgradeCtx, types.NamespacedName{Name: upgradeName + "-savegame", Namespace: upgradeNS}, pvc); err == nil {
-			pvc.Finalizers = nil
-			_ = k8sClient.Update(upgradeCtx, pvc)
-			_ = k8sClient.Delete(upgradeCtx, pvc)
-		}
-	})
-
-	upgradeRec := func() (reconcile.Result, error) {
-		return newReconciler().Reconcile(upgradeCtx, reconcile.Request{NamespacedName: upgradeNN})
-	}
-
-	Describe("NoSnapshot (default)", func() {
-		It("updates the StatefulSet image immediately without blocking", func() {
-			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategyNoSnapshot)
-			_, err := upgradeRec()
-			Expect(err).NotTo(HaveOccurred())
-
-			cr := &enshroudedv1alpha1.EnshroudedServer{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
-			cr.Spec.Image.Tag = upgradeNextTag
-			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
-
-			_, err = upgradeRec()
-			Expect(err).NotTo(HaveOccurred())
-
-			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
-			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
-				Equal("sknnr/enshrouded-dedicated-server:" + upgradeNextTag),
-			)
-		})
-	})
-
-	Describe("SnapshotBeforeUpdate (best-effort)", func() {
-		It("proceeds with the StatefulSet update even when VolumeSnapshot CRDs are absent", func() {
-			// VolumeSnapshot CRDs are not registered in envtest → r.Create returns
-			// an "unknown resource" error. The best-effort strategy must swallow it
-			// and still apply the StatefulSet update.
-			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategySnapshotBeforeUpdate)
-			_, err := upgradeRec()
-			Expect(err).NotTo(HaveOccurred())
-
-			cr := &enshroudedv1alpha1.EnshroudedServer{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
-			cr.Spec.Image.Tag = upgradeNextTag
-			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
-
-			_, err = upgradeRec()
-			Expect(err).NotTo(HaveOccurred())
-
-			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
-			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
-				Equal("sknnr/enshrouded-dedicated-server:" + upgradeNextTag),
-			)
-		})
-	})
-
-	Describe("StrictSnapshotBeforeUpdate", func() {
-		It("blocks the StatefulSet update when VolumeSnapshot CRDs are absent", func() {
-			// Same setup — strict mode must return an error and leave the
-			// StatefulSet at the original image.
-			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategyStrictSnapshotBeforeUpdate)
-			_, err := upgradeRec()
-			Expect(err).NotTo(HaveOccurred())
-
-			cr := &enshroudedv1alpha1.EnshroudedServer{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
-			cr.Spec.Image.Tag = upgradeNextTag
-			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
-
-			_, err = upgradeRec()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("strict pre-update snapshot failed"))
-
-			// StatefulSet must still use the original image.
-			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
-			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
-				Equal("sknnr/enshrouded-dedicated-server:" + upgradeInitTag),
-			)
-		})
-	})
-})

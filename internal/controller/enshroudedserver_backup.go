@@ -18,11 +18,18 @@ import (
 	enshroudedv1alpha1 "github.com/payback159/enshrouded-operator/api/v1alpha1"
 )
 
-// volumeSnapshotGVR is the GroupVersionResource for VolumeSnapshot (v1 GA).
-var volumeSnapshotGVR = schema.GroupVersionResource{
-	Group:    "snapshot.storage.k8s.io",
-	Version:  "v1",
-	Resource: "volumesnapshots",
+// volumeSnapshotGVK is the GroupVersionKind for VolumeSnapshot (v1 GA).
+var volumeSnapshotGVK = schema.GroupVersionKind{
+	Group:   "snapshot.storage.k8s.io",
+	Version: "v1",
+	Kind:    "VolumeSnapshot",
+}
+
+// volumeSnapshotListGVK is the GroupVersionKind for VolumeSnapshotList.
+var volumeSnapshotListGVK = schema.GroupVersionKind{
+	Group:   "snapshot.storage.k8s.io",
+	Version: "v1",
+	Kind:    "VolumeSnapshotList",
 }
 
 // reconcileVolumeSnapshot evaluates whether a new VolumeSnapshot must be created
@@ -46,11 +53,7 @@ func (r *EnshroudedServerReconciler) reconcileVolumeSnapshot(ctx context.Context
 	snapName := fmt.Sprintf("%s-%d", server.Name, time.Now().Unix())
 
 	snap := &unstructured.Unstructured{}
-	snap.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "snapshot.storage.k8s.io",
-		Version: "v1",
-		Kind:    "VolumeSnapshot",
-	})
+	snap.SetGroupVersionKind(volumeSnapshotGVK)
 	snap.SetNamespace(server.Namespace)
 	snap.SetName(snapName)
 	snap.SetLabels(map[string]string{
@@ -58,8 +61,8 @@ func (r *EnshroudedServerReconciler) reconcileVolumeSnapshot(ctx context.Context
 		"enshrouded.io/server":         server.Name,
 	})
 
-	if err := unstructured.SetNestedField(snap.Object, map[string]interface{}{
-		"source": map[string]interface{}{
+	if err := unstructured.SetNestedField(snap.Object, map[string]any{
+		"source": map[string]any{
 			"persistentVolumeClaimName": pvcName,
 		},
 	}, "spec"); err != nil {
@@ -96,11 +99,7 @@ func (r *EnshroudedServerReconciler) pruneVolumeSnapshots(ctx context.Context, s
 	log := logf.FromContext(ctx)
 
 	snapList := &unstructured.UnstructuredList{}
-	snapList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "snapshot.storage.k8s.io",
-		Version: "v1",
-		Kind:    "VolumeSnapshotList",
-	})
+	snapList.SetGroupVersionKind(volumeSnapshotListGVK)
 
 	if err := r.List(ctx, snapList,
 		client.InNamespace(server.Namespace),
@@ -167,6 +166,54 @@ func (r *EnshroudedServerReconciler) reconcileS3Sidecar(ctx context.Context, ser
 	return nil
 }
 
+// snapshotBeforeUpdate creates a one-off VolumeSnapshot named
+// "<server>-pre-update-<unix-timestamp>" before a StatefulSet update is applied.
+// The function is best-effort: if the snapshot creation fails the error is logged
+// but the update proceeds anyway.  It intentionally does NOT wait for the snapshot
+// to reach ReadyToUse=true so the update is not blocked.
+func (r *EnshroudedServerReconciler) snapshotBeforeUpdate(ctx context.Context, server *enshroudedv1alpha1.EnshroudedServer) error {
+	log := logf.FromContext(ctx)
+
+	pvcName := server.Name + "-savegame"
+	snapName := fmt.Sprintf("%s-pre-update-%d", server.Name, time.Now().Unix())
+
+	snap := &unstructured.Unstructured{}
+	snap.SetGroupVersionKind(volumeSnapshotGVK)
+	snap.SetNamespace(server.Namespace)
+	snap.SetName(snapName)
+	snap.SetLabels(map[string]string{
+		"app.kubernetes.io/managed-by": "enshrouded-operator",
+		"enshrouded.io/server":         server.Name,
+		"enshrouded.io/trigger":        "pre-update",
+	})
+
+	if err := unstructured.SetNestedField(snap.Object, map[string]any{
+		"source": map[string]any{
+			"persistentVolumeClaimName": pvcName,
+		},
+	}, "spec"); err != nil {
+		return fmt.Errorf("building pre-update VolumeSnapshot spec: %w", err)
+	}
+
+	if server.Spec.Backup.VolumeSnapshot.VolumeSnapshotClassName != nil {
+		if err := unstructured.SetNestedField(snap.Object,
+			*server.Spec.Backup.VolumeSnapshot.VolumeSnapshotClassName,
+			"spec", "volumeSnapshotClassName"); err != nil {
+			return fmt.Errorf("setting volumeSnapshotClassName on pre-update snapshot: %w", err)
+		}
+	}
+
+	if err := ctrl.SetControllerReference(server, snap, r.Scheme); err != nil {
+		return fmt.Errorf("setting owner reference on pre-update VolumeSnapshot: %w", err)
+	}
+
+	if err := r.Create(ctx, snap); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating pre-update VolumeSnapshot %s: %w", snapName, err)
+	}
+	log.Info("Created pre-update VolumeSnapshot", "snapshot", snapName)
+	return nil
+}
+
 // ptr returns a pointer to the given value.
 func ptr[T any](v T) *T { return &v }
 
@@ -180,11 +227,6 @@ func s3SidecarContainer(server *enshroudedv1alpha1.EnshroudedServer) *corev1.Con
 	image := s3.Image
 	if image == "" {
 		image = "rclone/rclone:latest"
-	}
-
-	schedule := s3.Schedule
-	if schedule == "" {
-		schedule = "*/30 * * * *"
 	}
 
 	// Convert cron schedule to a sleep interval (best-effort simple case).

@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.activePlayers
       name: Players
       type: integer
+    - jsonPath: .status.gameVersion
+      name: Version
+      type: string
     - jsonPath: .status.updateDeferred
       name: Deferred
       type: boolean
@@ -344,6 +347,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  snapshotBeforeUpdate:
+                    description: |-
+                      snapshotBeforeUpdate triggers a VolumeSnapshot immediately before a
+                      StatefulSet pod-template change is applied. Requires VolumeSnapshot CRDs
+                      to be installed and a VolumeSnapshotClass to be available.
+                      If the snapshot fails the update proceeds anyway (best-effort).
+                    type: boolean
                 type: object
               userGroups:
                 description: |-
@@ -423,7 +433,7 @@ spec:
               activePlayers:
                 description: |-
                   activePlayers is the last-observed number of connected players.
-                  Updated by the metrics collector running inside the operator.
+                  Updated by the metrics sidecar running inside the game server pod.
                 format: int32
                 type: integer
               conditions:
@@ -487,6 +497,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              gameVersion:
+                description: |-
+                  gameVersion is the game server version string reported via the A2S protocol.
+                  Updated by the metrics sidecar running inside the game server pod.
+                type: string
               phase:
                 description: phase summarizes the overall status of the EnshroudedServer.
                 enum:

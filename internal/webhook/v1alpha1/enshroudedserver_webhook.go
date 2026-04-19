@@ -35,6 +35,11 @@ import (
 // log is for logging in this package.
 var enshroudedserverlog = logf.Log.WithName("enshroudedserver-resource")
 
+const (
+	defaultServerIP        = "0.0.0.0"
+	defaultImageRepository = "sknnr/enshrouded-dedicated-server"
+)
+
 // SetupEnshroudedServerWebhookWithManager registers the webhook for EnshroudedServer in the manager.
 func SetupEnshroudedServerWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &enshroudedv1alpha1.EnshroudedServer{}).
@@ -75,10 +80,10 @@ func (d *EnshroudedServerCustomDefaulter) Default(_ context.Context, obj *enshro
 		spec.ServerSlots = 16
 	}
 	if spec.ServerIP == "" {
-		spec.ServerIP = "0.0.0.0"
+		spec.ServerIP = defaultServerIP
 	}
 	if spec.Image.Repository == "" {
-		spec.Image.Repository = "sknnr/enshrouded-dedicated-server"
+		spec.Image.Repository = defaultImageRepository
 	}
 	if spec.Image.Tag == "" {
 		spec.Image.Tag = "latest"
@@ -161,7 +166,7 @@ func validateEnshroudedServer(obj *enshroudedv1alpha1.EnshroudedServer) (admissi
 	}
 
 	// serverIP must be a valid IP address (if set to non-default)
-	if spec.ServerIP != "" && spec.ServerIP != "0.0.0.0" {
+	if spec.ServerIP != "" && spec.ServerIP != defaultServerIP {
 		if ip := net.ParseIP(spec.ServerIP); ip == nil {
 			allErrs = append(allErrs, field.Invalid(
 				specPath.Child("serverIP"),

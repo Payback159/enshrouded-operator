@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -92,6 +93,7 @@ type userGroupJSON struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the current cluster state closer to the desired state defined
 // by the EnshroudedServer resource.
@@ -165,6 +167,10 @@ func (r *EnshroudedServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	if err := r.reconcilePDB(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if err := r.reconcileNetworkPolicy(ctx, server); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -195,7 +201,12 @@ func (r *EnshroudedServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateStatus(ctx, server, updateDeferred); err != nil {
+	if err := r.reconcileVolumeSnapshot(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	maintenanceWindowActive := isInMaintenanceWindow(server.Spec.UpdatePolicy.MaintenanceWindows)
+	if err := r.updateStatus(ctx, server, updateDeferred, maintenanceWindowActive); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -412,6 +423,17 @@ func (r *EnshroudedServerReconciler) reconcileStatefulSet(ctx context.Context, s
 		return r.Create(ctx, desired)
 	}
 
+	// If snapshotBeforeUpdate is enabled and the pod template image has changed,
+	// create a pre-update VolumeSnapshot before applying the update (best-effort).
+	if server.Spec.UpdatePolicy.SnapshotBeforeUpdate && len(existing.Spec.Template.Spec.Containers) > 0 {
+		currentImage := existing.Spec.Template.Spec.Containers[0].Image
+		if currentImage != desired.Spec.Template.Spec.Containers[0].Image {
+			if snapErr := r.snapshotBeforeUpdate(ctx, server); snapErr != nil {
+				log.Error(snapErr, "Pre-update snapshot failed — proceeding with update anyway")
+			}
+		}
+	}
+
 	// Only update mutable fields to avoid conflicts with immutable StatefulSet fields.
 	existing.Spec.Template = desired.Spec.Template
 	existing.Spec.Replicas = desired.Spec.Replicas
@@ -583,6 +605,31 @@ func (r *EnshroudedServerReconciler) buildStatefulSet(server *enshroudedv1alpha1
 
 	replicas := int32(1)
 
+	// When the metrics sidecar is enabled, inject a readiness probe on the game
+	// server container that defers "Ready" until the sidecar's /readyz endpoint
+	// returns HTTP 200 (i.e. the server responds to A2S queries).
+	// This prevents the Service from sending game traffic to a pod that is still
+	// booting or downloading world data.
+	var gameServerReadinessProbe *corev1.Probe
+	if server.Spec.MetricsSidecar.Enabled {
+		metricsPort := server.Spec.MetricsSidecar.MetricsPort
+		if metricsPort == 0 {
+			metricsPort = 9090
+		}
+		gameServerReadinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/readyz",
+					Port: intstr.FromInt32(metricsPort),
+				},
+			},
+			InitialDelaySeconds: 60,
+			PeriodSeconds:       15,
+			FailureThreshold:    3,
+			SuccessThreshold:    1,
+		}
+	}
+
 	// Optionally inject the metrics sidecar.
 	containers := []corev1.Container{
 		{
@@ -594,8 +641,9 @@ func (r *EnshroudedServerReconciler) buildStatefulSet(server *enshroudedv1alpha1
 				{Name: "query", ContainerPort: port, Protocol: corev1.ProtocolUDP},
 				{Name: "steam", ContainerPort: steamPort, Protocol: corev1.ProtocolUDP},
 			},
-			Resources:    server.Spec.Resources,
-			VolumeMounts: volumeMounts,
+			Resources:      server.Spec.Resources,
+			VolumeMounts:   volumeMounts,
+			ReadinessProbe: gameServerReadinessProbe,
 		},
 	}
 	if c := metricsSidecarContainer(server, port); c != nil {
@@ -643,7 +691,8 @@ func (r *EnshroudedServerReconciler) buildStatefulSet(server *enshroudedv1alpha1
 
 // updateStatus reconciles the status of the EnshroudedServer based on the StatefulSet state.
 // updateDeferred indicates whether a pending update is currently being held back.
-func (r *EnshroudedServerReconciler) updateStatus(ctx context.Context, server *enshroudedv1alpha1.EnshroudedServer, updateDeferred bool) error {
+// maintenanceWindowActive indicates whether the current time is inside a configured maintenance window.
+func (r *EnshroudedServerReconciler) updateStatus(ctx context.Context, server *enshroudedv1alpha1.EnshroudedServer, updateDeferred bool, maintenanceWindowActive bool) error {
 	oldPhase := string(server.Status.Phase)
 
 	sts := &appsv1.StatefulSet{}
@@ -714,6 +763,7 @@ func (r *EnshroudedServerReconciler) updateStatus(ctx context.Context, server *e
 		server.Namespace, server.Name,
 		server.Status.ReadyReplicas,
 		server.Status.UpdateDeferred, string(server.Status.Phase), oldPhase,
+		maintenanceWindowActive,
 	)
 	return nil
 }
@@ -896,10 +946,10 @@ func inWindow(t time.Time, expr string) bool {
 		return false
 	}
 	// We only check hour (field[1]) and weekday (field[4]).
-	if !matchCronField(fields[1], t.Hour(), 0, 23) {
+	if !matchCronField(fields[1], t.Hour()) {
 		return false
 	}
-	if !matchCronField(fields[4], int(t.Weekday()), 0, 6) {
+	if !matchCronField(fields[4], int(t.Weekday())) {
 		return false
 	}
 	return true
@@ -926,7 +976,7 @@ func splitFields(s string) []string {
 
 // matchCronField returns true if value matches the cron field expression
 // (supports *, single values, ranges x-y, and lists a,b,c).
-func matchCronField(field string, value, min, max int) bool {
+func matchCronField(field string, value int) bool {
 	if field == "*" {
 		return true
 	}
@@ -1017,6 +1067,7 @@ func (r *EnshroudedServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		// Watch Secrets so that password changes trigger a reconcile and rolling restart.
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findServersForSecret)).
 		Named("enshroudedserver").

@@ -55,17 +55,30 @@ var (
 		},
 		[]string{"namespace", "name", "phase"},
 	)
+
+	// MaintenanceWindowActive is 1 when the server is currently inside a configured
+	// maintenance window, 0 otherwise. Can be used to trigger alerts or silence
+	// other alert rules during planned maintenance.
+	MaintenanceWindowActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "enshrouded",
+			Subsystem: "operator",
+			Name:      "maintenance_window_active",
+			Help:      "1 if the current time falls inside a configured maintenance window, 0 otherwise.",
+		},
+		[]string{"namespace", "name"},
+	)
 )
 
 func init() {
-	ctrlmetrics.Registry.MustRegister(ReadyReplicas, UpdateDeferred, Phase)
+	ctrlmetrics.Registry.MustRegister(ReadyReplicas, UpdateDeferred, Phase, MaintenanceWindowActive)
 }
 
 // SetServerMetrics refreshes all operator-level gauges for a single EnshroudedServer.
 // oldPhase is the previous phase so the old label-set can be deleted when it changes.
 // Application-level metrics (active_players, server_up, etc.) are reported by
 // the metrics sidecar running inside the game server pod.
-func SetServerMetrics(namespace, name string, readyReplicas int32, updateDeferred bool, phase, oldPhase string) {
+func SetServerMetrics(namespace, name string, readyReplicas int32, updateDeferred bool, phase, oldPhase string, maintenanceWindowActive bool) {
 	ReadyReplicas.WithLabelValues(namespace, name).Set(float64(readyReplicas))
 
 	deferred := float64(0)
@@ -78,6 +91,12 @@ func SetServerMetrics(namespace, name string, readyReplicas int32, updateDeferre
 		Phase.DeleteLabelValues(namespace, name, oldPhase)
 	}
 	Phase.WithLabelValues(namespace, name, phase).Set(1)
+
+	inMaintenance := float64(0)
+	if maintenanceWindowActive {
+		inMaintenance = 1
+	}
+	MaintenanceWindowActive.WithLabelValues(namespace, name).Set(inMaintenance)
 }
 
 // DeleteServerMetrics removes all operator-level metrics for a server that has been deleted.
@@ -85,4 +104,5 @@ func DeleteServerMetrics(namespace, name, phase string) {
 	ReadyReplicas.DeleteLabelValues(namespace, name)
 	UpdateDeferred.DeleteLabelValues(namespace, name)
 	Phase.DeleteLabelValues(namespace, name, phase)
+	MaintenanceWindowActive.DeleteLabelValues(namespace, name)
 }

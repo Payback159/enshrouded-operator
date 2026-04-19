@@ -123,6 +123,16 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+SIDECAR_IMG ?= ghcr.io/payback159/enshrouded-metrics-sidecar:latest
+
+.PHONY: docker-build-sidecar
+docker-build-sidecar: ## Build docker image for the metrics sidecar.
+	$(CONTAINER_TOOL) build -t ${SIDECAR_IMG} -f Dockerfile.sidecar .
+
+.PHONY: docker-push-sidecar
+docker-push-sidecar: ## Push docker image for the metrics sidecar.
+	$(CONTAINER_TOOL) push ${SIDECAR_IMG}
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/

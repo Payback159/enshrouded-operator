@@ -270,6 +270,13 @@ type UpdatePolicySpec struct {
 	// Example: "TZ=Europe/Berlin 0 3 * * 1-5" (Mon-Fri 03:00 Berlin time).
 	// +optional
 	MaintenanceWindows []string `json:"maintenanceWindows,omitempty"`
+
+	// snapshotBeforeUpdate triggers a VolumeSnapshot immediately before a
+	// StatefulSet pod-template change is applied. Requires VolumeSnapshot CRDs
+	// to be installed and a VolumeSnapshotClass to be available.
+	// If the snapshot fails the update proceeds anyway (best-effort).
+	// +optional
+	SnapshotBeforeUpdate bool `json:"snapshotBeforeUpdate,omitempty"`
 }
 
 // EnshroudedServerPhase represents the lifecycle phase of an EnshroudedServer.
@@ -304,9 +311,14 @@ type EnshroudedServerStatus struct {
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
 	// activePlayers is the last-observed number of connected players.
-	// Updated by the metrics collector running inside the operator.
+	// Updated by the metrics sidecar running inside the game server pod.
 	// +optional
 	ActivePlayers int32 `json:"activePlayers,omitempty"`
+
+	// gameVersion is the game server version string reported via the A2S protocol.
+	// Updated by the metrics sidecar running inside the game server pod.
+	// +optional
+	GameVersion string `json:"gameVersion,omitempty"`
 
 	// updateDeferred is true while a pending update is held back because
 	// players are connected and deferWhilePlaying is enabled.
@@ -326,6 +338,7 @@ type EnshroudedServerStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
 // +kubebuilder:printcolumn:name="Players",type="integer",JSONPath=".status.activePlayers"
+// +kubebuilder:printcolumn:name="Version",type="string",JSONPath=".status.gameVersion"
 // +kubebuilder:printcolumn:name="Deferred",type="boolean",JSONPath=".status.updateDeferred"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

@@ -8,7 +8,7 @@ bin/*
 Dockerfile.cross
 
 # Compiled sidecar binary (built by `go build ./cmd/metrics-sidecar/`)
-metrics-sidecar
+/metrics-sidecar
 
 # Test binary, built with `go test -c`
 *.test

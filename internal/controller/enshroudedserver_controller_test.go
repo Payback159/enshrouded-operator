@@ -1346,3 +1346,129 @@ func findEnvVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
 	}
 	return nil
 }
+
+// -----------------------------------------------------------------
+// 14b. UpgradeStrategy — snapshotBeforeUpdate behaviour
+// -----------------------------------------------------------------
+var _ = Describe("UpgradeStrategy", func() {
+	const (
+		upgradeNS      = "default"
+		upgradeName    = "upgrade-strategy-server"
+		upgradeInitTag = "v1.0"
+		upgradeNextTag = "v2.0"
+	)
+	var (
+		upgradeNN  = types.NamespacedName{Name: upgradeName, Namespace: upgradeNS}
+		upgradeCtx = context.Background()
+	)
+
+	// Helper: create CR with a specific image tag and upgrade strategy.
+	createUpgradeServer := func(tag string, strategy enshroudedv1alpha1.UpgradeStrategyType) {
+		cr := &enshroudedv1alpha1.EnshroudedServer{
+			ObjectMeta: metav1.ObjectMeta{Name: upgradeName, Namespace: upgradeNS},
+			Spec: enshroudedv1alpha1.EnshroudedServerSpec{
+				Image: enshroudedv1alpha1.ImageSpec{
+					Repository: "sknnr/enshrouded-dedicated-server",
+					Tag:        tag,
+				},
+				UpdatePolicy: enshroudedv1alpha1.UpdatePolicySpec{
+					UpgradeStrategy: strategy,
+				},
+			},
+		}
+		Expect(k8sClient.Create(upgradeCtx, cr)).To(Succeed())
+	}
+
+	AfterEach(func() {
+		cr := &enshroudedv1alpha1.EnshroudedServer{}
+		if err := k8sClient.Get(upgradeCtx, upgradeNN, cr); err == nil {
+			cr.Finalizers = nil
+			_ = k8sClient.Update(upgradeCtx, cr)
+			_ = k8sClient.Delete(upgradeCtx, cr)
+		}
+		_ = k8sClient.Delete(upgradeCtx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: upgradeName, Namespace: upgradeNS}})
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := k8sClient.Get(upgradeCtx, types.NamespacedName{Name: upgradeName + "-savegame", Namespace: upgradeNS}, pvc); err == nil {
+			pvc.Finalizers = nil
+			_ = k8sClient.Update(upgradeCtx, pvc)
+			_ = k8sClient.Delete(upgradeCtx, pvc)
+		}
+	})
+
+	upgradeRec := func() (reconcile.Result, error) {
+		return newReconciler().Reconcile(upgradeCtx, reconcile.Request{NamespacedName: upgradeNN})
+	}
+
+	Describe("NoSnapshot (default)", func() {
+		It("updates the StatefulSet image immediately without blocking", func() {
+			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategyNoSnapshot)
+			_, err := upgradeRec()
+			Expect(err).NotTo(HaveOccurred())
+
+			cr := &enshroudedv1alpha1.EnshroudedServer{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
+			cr.Spec.Image.Tag = upgradeNextTag
+			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
+
+			_, err = upgradeRec()
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
+				Equal("sknnr/enshrouded-dedicated-server:" + upgradeNextTag),
+			)
+		})
+	})
+
+	Describe("SnapshotBeforeUpdate (best-effort)", func() {
+		It("proceeds with the StatefulSet update even when VolumeSnapshot CRDs are absent", func() {
+			// VolumeSnapshot CRDs are not registered in envtest → r.Create returns
+			// an "unknown resource" error. The best-effort strategy must swallow it
+			// and still apply the StatefulSet update.
+			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategySnapshotBeforeUpdate)
+			_, err := upgradeRec()
+			Expect(err).NotTo(HaveOccurred())
+
+			cr := &enshroudedv1alpha1.EnshroudedServer{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
+			cr.Spec.Image.Tag = upgradeNextTag
+			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
+
+			_, err = upgradeRec()
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
+				Equal("sknnr/enshrouded-dedicated-server:" + upgradeNextTag),
+			)
+		})
+	})
+
+	Describe("StrictSnapshotBeforeUpdate", func() {
+		It("blocks the StatefulSet update when VolumeSnapshot CRDs are absent", func() {
+			// Same setup — strict mode must return an error and leave the
+			// StatefulSet at the original image.
+			createUpgradeServer(upgradeInitTag, enshroudedv1alpha1.UpgradeStrategyStrictSnapshotBeforeUpdate)
+			_, err := upgradeRec()
+			Expect(err).NotTo(HaveOccurred())
+
+			cr := &enshroudedv1alpha1.EnshroudedServer{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, cr)).To(Succeed())
+			cr.Spec.Image.Tag = upgradeNextTag
+			Expect(k8sClient.Update(upgradeCtx, cr)).To(Succeed())
+
+			_, err = upgradeRec()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("strict pre-update snapshot failed"))
+
+			// StatefulSet must still use the original image.
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(upgradeCtx, upgradeNN, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(
+				Equal("sknnr/enshrouded-dedicated-server:" + upgradeInitTag),
+			)
+		})
+	})
+})

@@ -595,6 +595,201 @@ spec:
 	})
 })
 
+// -----------------------------------------------------------------
+// UpgradeStrategy E2E tests
+// -----------------------------------------------------------------
+var _ = Describe("UpgradeStrategy", Ordered, func() {
+	const (
+		crNamespace = "default"
+		crName      = "e2e-upgrade-strategy-server"
+		initialTag  = "latest"
+		updatedTag  = "v0.9.9.6"
+	)
+
+	// Helper: write a temp file with the given CR YAML and return its path.
+	writeCR := func(tag string, strategy string) string {
+		strategyField := ""
+		if strategy != "" {
+			strategyField = fmt.Sprintf("    upgradeStrategy: %s\n", strategy)
+		}
+		yaml := fmt.Sprintf(`apiVersion: enshrouded.enshrouded.io/v1alpha1
+kind: EnshroudedServer
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  serverName: "E2E UpgradeStrategy Test"
+  port: 15637
+  steamPort: 27015
+  serverSlots: 4
+  storage:
+    size: 1Gi
+  image:
+    repository: sknnr/enshrouded-dedicated-server
+    tag: %s
+  updatePolicy:
+%s`, crName, crNamespace, tag, strategyField)
+
+		f, err := os.CreateTemp("", "enshrouded-upgrade-cr-*.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = f.WriteString(yaml)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.Close()).To(Succeed())
+		return f.Name()
+	}
+
+	cleanupCR := func() {
+		cmd := exec.Command("kubectl", "delete", "enshroudedserver", crName, "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "statefulset", crName, "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "pvc", crName+"-savegame", "-n", crNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	}
+
+	AfterAll(cleanupCR)
+
+	It("NoSnapshot: StatefulSet image is updated when upgradeStrategy is NoSnapshot", func() {
+		f := writeCR(initialTag, "NoSnapshot")
+		defer os.Remove(f)
+
+		cmd := exec.Command("kubectl", "apply", "-f", f)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the StatefulSet with initial image to be created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("updating the CR image tag to " + updatedTag)
+		f2 := writeCR(updatedTag, "NoSnapshot")
+		defer os.Remove(f2)
+		cmd = exec.Command("kubectl", "apply", "-f", f2)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the StatefulSet is updated to the new image")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + updatedTag))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		cleanupCR()
+	})
+
+	It("SnapshotBeforeUpdate: StatefulSet image is updated even when VolumeSnapshot CRDs are absent", func() {
+		// Kind clusters do not ship with VolumeSnapshot CRDs, so the snapshot
+		// creation will fail.  The best-effort strategy must swallow the error
+		// and still roll out the new image.
+		f := writeCR(initialTag, "SnapshotBeforeUpdate")
+		defer os.Remove(f)
+
+		cmd := exec.Command("kubectl", "apply", "-f", f)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the StatefulSet with initial image to be created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("updating the CR image tag to " + updatedTag)
+		f2 := writeCR(updatedTag, "SnapshotBeforeUpdate")
+		defer os.Remove(f2)
+		cmd = exec.Command("kubectl", "apply", "-f", f2)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the StatefulSet is updated despite snapshot failure")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + updatedTag))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		cleanupCR()
+	})
+
+	It("StrictSnapshotBeforeUpdate: StatefulSet image is NOT updated when VolumeSnapshot CRDs are absent", func() {
+		// Strict mode must block the update when snapshot creation fails.
+		f := writeCR(initialTag, "StrictSnapshotBeforeUpdate")
+		defer os.Remove(f)
+
+		cmd := exec.Command("kubectl", "apply", "-f", f)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the StatefulSet with initial image to be created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("updating the CR image tag to " + updatedTag)
+		f2 := writeCR(updatedTag, "StrictSnapshotBeforeUpdate")
+		defer os.Remove(f2)
+		cmd = exec.Command("kubectl", "apply", "-f", f2)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying the StatefulSet image remains at the original tag (update blocked)")
+		// Wait long enough for the controller to attempt reconciliation, but not
+		// so long that exponential backoff would obscure the result.
+		Consistently(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", crName, "-n", crNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].image}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("sknnr/enshrouded-dedicated-server:" + initialTag))
+		}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+		cleanupCR()
+	})
+
+	It("webhook: rejects an invalid upgradeStrategy value", func() {
+		yaml := fmt.Sprintf(`apiVersion: enshrouded.enshrouded.io/v1alpha1
+kind: EnshroudedServer
+metadata:
+  name: %s-invalid
+  namespace: %s
+spec:
+  storage:
+    size: 1Gi
+  updatePolicy:
+    upgradeStrategy: InvalidValue
+`, crName, crNamespace)
+
+		f, err := os.CreateTemp("", "enshrouded-invalid-strategy-*.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.Remove(f.Name())
+		_, err = f.WriteString(yaml)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.Close()).To(Succeed())
+
+		cmd := exec.Command("kubectl", "apply", "-f", f.Name())
+		out, err := utils.Run(cmd)
+		Expect(err).To(HaveOccurred(), "expected apply to fail for invalid upgradeStrategy")
+		Expect(out).To(ContainSubstring("upgradeStrategy"))
+	})
+})
+
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
 // and parsing the resulting token from the API response.
